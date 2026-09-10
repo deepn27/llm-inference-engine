@@ -1,6 +1,7 @@
 from copy import copy
 from enum import Enum, auto
 from itertools import count
+from time import perf_counter
 
 from llm_inference_engine.sampling_params import SamplingParams
 
@@ -15,9 +16,21 @@ class Sequence:
     block_size = 256
     counter = count()
 
-    def __init__(self, token_ids: list[int], sampling_params = SamplingParams()):
+    def __init__(
+        self,
+        token_ids: list[int],
+        sampling_params=SamplingParams(),
+        arrival_time: float | None = None,
+        tokenization_time: float = 0.0,
+    ):
         self.seq_id = next(Sequence.counter)
         self.status = SequenceStatus.WAITING
+        self.arrival_time = arrival_time if arrival_time is not None else perf_counter()
+        self.tokenization_time = tokenization_time
+        self.waiting_since = 0.0
+        self.running_since = 0.0
+        self.first_token_time = 0.0
+        self.finished_time = 0.0
         self.token_ids = copy(token_ids)
         self.last_token = token_ids[-1]
         self.num_tokens = len(self.token_ids)

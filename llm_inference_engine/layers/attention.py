@@ -55,9 +55,17 @@ class Attention(nn.Module):
         self.scale = scale
         self.num_kv_heads = num_kv_heads
         self.k_cache = self.v_cache = torch.tensor([])
+        self.instrumentation = None
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         context = get_context()
+        if self.instrumentation is None:
+            return self._forward(context, q, k, v)
+        mode = "prefill" if context.is_prefill else "decode"
+        with self.instrumentation.gpu_range(f"attention.{mode}"):
+            return self._forward(context, q, k, v)
+
+    def _forward(self, context, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
         k_cache, v_cache = self.k_cache, self.v_cache
         if k_cache.numel() and v_cache.numel():
             store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)

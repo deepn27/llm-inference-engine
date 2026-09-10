@@ -5,6 +5,7 @@ from llm_inference_engine.engine.sequence import Sequence
 from llm_inference_engine.models.qwen3 import Qwen3ForCausalLM
 from llm_inference_engine.layers.sampler import Sampler
 from llm_inference_engine.utils.context import set_context, reset_context
+from llm_inference_engine.utils.instrumentation import Instrumentation
 from llm_inference_engine.utils.loader import load_model
 
 
@@ -12,6 +13,8 @@ class ModelRunner:
 
     def __init__(self, config: Config):
         self.config = config
+        self.instrumentation = Instrumentation(config.enable_metrics, config.enable_nvtx)
+        self.last_metrics = {}
         hf_config = config.hf_config
         self.block_size = config.kvcache_block_size
 
@@ -20,6 +23,9 @@ class ModelRunner:
         torch.set_default_dtype(hf_config.dtype)
         torch.set_default_device("cuda")
         self.model = Qwen3ForCausalLM(hf_config)
+        for module in self.model.modules():
+            if hasattr(module, "instrumentation"):
+                module.instrumentation = self.instrumentation
         load_model(self.model, config.model)
         self.sampler = Sampler()
         self.warmup_model()
@@ -133,9 +139,27 @@ class ModelRunner:
         return self.model.compute_logits(self.model(input_ids, positions))
 
     def run(self, seqs: list[Sequence], is_prefill: bool) -> list[int]:
-        input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
-        temperatures = self.prepare_sample(seqs)
-        logits = self.run_model(input_ids, positions)
-        token_ids = self.sampler(logits, temperatures).tolist()
+        instrumentation = self.instrumentation
+        instrumentation.reset()
+        mode = "prefill" if is_prefill else "decode"
+        with instrumentation.cpu_range(f"model_runner.{mode}"):
+            with instrumentation.cpu_range("prepare_inputs"):
+                input_ids, positions = self.prepare_prefill(seqs) if is_prefill else self.prepare_decode(seqs)
+                temperatures = self.prepare_sample(seqs)
+            with instrumentation.gpu_range("model"):
+                logits = self.run_model(input_ids, positions)
+            with instrumentation.gpu_range("sampling"):
+                token_ids_tensor = self.sampler(logits, temperatures)
+            with instrumentation.cpu_range("device_to_host"):
+                token_ids = token_ids_tensor.tolist()
+        instrumentation.flush_gpu()
+        profile = instrumentation.snapshot()
+        self.last_metrics = {
+            "mode": mode,
+            "batch_size": len(seqs),
+            "scheduled_tokens": sum(seq.num_scheduled_tokens for seq in seqs),
+            "max_context_length": max(len(seq) for seq in seqs),
+            **profile,
+        }
         reset_context()
         return token_ids
