@@ -1,14 +1,13 @@
 import torch
 from torch import nn
-import torch.distributed as dist
 from transformers import Qwen3Config
 
 from llm_inference_engine.layers.activation import SiluAndMul
 from llm_inference_engine.layers.attention import Attention
 from llm_inference_engine.layers.layernorm import RMSNorm
-from llm_inference_engine.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
+from llm_inference_engine.layers.linear import QKVLinear, MergedColumnLinear, RowLinear
 from llm_inference_engine.layers.rotary_embedding import get_rope
-from llm_inference_engine.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+from llm_inference_engine.layers.embed_head import VocabEmbedding, LMHead
 
 
 class Qwen3Attention(nn.Module):
@@ -26,27 +25,24 @@ class Qwen3Attention(nn.Module):
         rope_scaling: dict | None = None,
     ) -> None:
         super().__init__()
-        tp_size = dist.get_world_size()
         self.total_num_heads = num_heads
-        assert self.total_num_heads % tp_size == 0
-        self.num_heads = self.total_num_heads // tp_size
+        self.num_heads = self.total_num_heads
         self.total_num_kv_heads = num_kv_heads
-        assert self.total_num_kv_heads % tp_size == 0
-        self.num_kv_heads = self.total_num_kv_heads // tp_size
+        self.num_kv_heads = self.total_num_kv_heads
         self.head_dim = head_dim or hidden_size // self.total_num_heads
         self.q_size = self.num_heads * self.head_dim
         self.kv_size = self.num_kv_heads * self.head_dim
         self.scaling = self.head_dim ** -0.5
         self.qkv_bias = qkv_bias
 
-        self.qkv_proj = QKVParallelLinear(
+        self.qkv_proj = QKVLinear(
             hidden_size,
             self.head_dim,
             self.total_num_heads,
             self.total_num_kv_heads,
             bias=qkv_bias,
         )
-        self.o_proj = RowParallelLinear(
+        self.o_proj = RowLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
@@ -97,12 +93,12 @@ class Qwen3MLP(nn.Module):
         hidden_act: str,
     ) -> None:
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
+        self.gate_up_proj = MergedColumnLinear(
             hidden_size,
             [intermediate_size] * 2,
             bias=False,
         )
-        self.down_proj = RowParallelLinear(
+        self.down_proj = RowLinear(
             intermediate_size,
             hidden_size,
             bias=False,
@@ -166,7 +162,7 @@ class Qwen3Model(nn.Module):
         config: Qwen3Config,
     ) -> None:
         super().__init__()
-        self.embed_tokens = VocabParallelEmbedding(config.vocab_size, config.hidden_size)
+        self.embed_tokens = VocabEmbedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList([Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -198,7 +194,7 @@ class Qwen3ForCausalLM(nn.Module):
     ) -> None:
         super().__init__()
         self.model = Qwen3Model(config)
-        self.lm_head = ParallelLMHead(config.vocab_size, config.hidden_size)
+        self.lm_head = LMHead(config.vocab_size, config.hidden_size)
         if config.tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
 

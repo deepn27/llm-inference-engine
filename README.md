@@ -1,25 +1,17 @@
-<p align="center">
-<img width="300" src="assets/logo.png">
-</p>
+# LLM Inference Engine
 
-<p align="center">
-<a href="https://trendshift.io/repositories/15323" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15323" alt="GeeeekExplorer%2Fnano-vllm | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-</p>
-
-# Nano-vLLM
-
-A lightweight vLLM implementation built from scratch.
+A lightweight LLM inference engine built from scratch.
 
 ## Key Features
 
-* 🚀 **Fast offline inference** - Comparable inference speeds to vLLM
+* 🚀 **Offline inference** - Requests execute sequentially on a single GPU
 * 📖 **Readable codebase** - Clean implementation in ~ 1,200 lines of Python code
-* ⚡ **Optimization Suite** - Prefix caching, Tensor Parallelism, Torch compilation, CUDA graph, etc.
+* ⚡ **Optimized execution** - FlashAttention and paged KV caching
 
 ## Installation
 
 ```bash
-pip install git+https://github.com/GeeeekExplorer/nano-vllm.git
+pip install git+https://github.com/GeeeekExplorer/llm-inference-engine.git
 ```
 
 ## Model Download
@@ -35,10 +27,10 @@ huggingface-cli download --resume-download Qwen/Qwen3-0.6B \
 
 See `example.py` for usage. The API mirrors vLLM's interface with minor differences in the `LLM.generate` method:
 ```python
-from nanovllm import LLM, SamplingParams
-llm = LLM("/YOUR/MODEL/PATH", enforce_eager=True, tensor_parallel_size=1)
+from llm_inference_engine import LLM, SamplingParams
+llm = LLM("/YOUR/MODEL/PATH")
 sampling_params = SamplingParams(temperature=0.6, max_tokens=256)
-prompts = ["Hello, Nano-vLLM."]
+prompts = ["Hello, LLM Inference Engine."]
 outputs = llm.generate(prompts, sampling_params)
 outputs[0]["text"]
 ```
@@ -54,13 +46,6 @@ See `bench.py` for benchmark.
 - Input Length: Randomly sampled between 100–1024 tokens
 - Output Length: Randomly sampled between 100–1024 tokens
 
-**Performance Results:**
-| Inference Engine | Output Tokens | Time (s) | Throughput (tokens/s) |
-|----------------|-------------|----------|-----------------------|
-| vLLM           | 133,966     | 98.37    | 1361.84               |
-| Nano-vLLM      | 133,966     | 93.41    | 1434.13               |
+## License
 
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=GeeeekExplorer/nano-vllm&type=Date)](https://www.star-history.com/#GeeeekExplorer/nano-vllm&Date)
+See [LICENSE](LICENSE).
