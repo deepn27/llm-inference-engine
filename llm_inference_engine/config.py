@@ -12,7 +12,7 @@ class Config:
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
-    max_batch_tokens: int = 1024
+    max_batch_tokens: int = 256
     enable_metrics: bool = False
     enable_nvtx: bool = False
 

@@ -31,20 +31,26 @@ class Scheduler:
         scheduled_tokens = 0
         while self.waiting:
             seq = self.waiting[0]
-            if scheduled_seqs and scheduled_tokens + seq.num_tokens > self.max_batch_tokens:
+            remaining_budget = self.max_batch_tokens - scheduled_tokens
+            if remaining_budget == 0:
                 break
-            if not self.block_manager.can_allocate(seq):
-                if not self.running and not scheduled_seqs:
-                    raise RuntimeError("Insufficient KV cache for request")
+            if not seq.block_table:
+                if not self.block_manager.can_allocate(seq):
+                    if not self.running and not scheduled_seqs:
+                        raise RuntimeError("Insufficient KV cache for request")
+                    break
+                self.block_manager.allocate(seq)
+            remaining_tokens = seq.num_tokens - seq.num_cached_tokens
+            if scheduled_seqs and remaining_tokens > remaining_budget:
                 break
-            self.waiting.popleft()
-            self.block_manager.allocate(seq)
-            seq.num_scheduled_tokens = seq.num_tokens
-            seq.status = SequenceStatus.RUNNING
-            seq.running_since = perf_counter()
-            self.running.append(seq)
+            seq.num_scheduled_tokens = min(remaining_tokens, remaining_budget)
             scheduled_seqs.append(seq)
             scheduled_tokens += seq.num_scheduled_tokens
+            if seq.num_cached_tokens + seq.num_scheduled_tokens == seq.num_tokens:
+                self.waiting.popleft()
+                seq.status = SequenceStatus.RUNNING
+                seq.running_since = perf_counter()
+                self.running.append(seq)
 
         if scheduled_seqs:
             self.last_metrics = {
@@ -75,7 +81,10 @@ class Scheduler:
 
     def postprocess(self, seqs: list[Sequence], token_ids: list[int]):
         for seq, token_id in zip(seqs, token_ids):
+            seq.num_cached_tokens += seq.num_scheduled_tokens
             seq.num_scheduled_tokens = 0
+            if seq.is_prefill and seq.num_cached_tokens < seq.num_tokens:
+                continue
             seq.append_token(token_id)
             if not seq.first_token_time:
                 seq.first_token_time = perf_counter()
