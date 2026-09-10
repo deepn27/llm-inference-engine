@@ -10,13 +10,14 @@ class Scheduler:
 
     def __init__(self, config: Config):
         self.eos = config.eos
+        self.max_batch_tokens = config.max_batch_tokens
         self.block_manager = BlockManager(config.num_kvcache_blocks, config.kvcache_block_size)
         self.waiting: deque[Sequence] = deque()
-        self.running: Sequence | None = None
+        self.running: list[Sequence] = []
         self.last_metrics = {}
 
     def is_finished(self):
-        return not self.waiting and self.running is None
+        return not self.waiting and not self.running
 
     def add(self, seq: Sequence):
         seq.waiting_since = perf_counter()
@@ -25,40 +26,49 @@ class Scheduler:
     def schedule(self) -> tuple[list[Sequence], bool]:
         schedule_start = perf_counter()
         waiting_depth = len(self.waiting)
-        if self.running is None:
-            seq = self.waiting.popleft()
-            if not self.block_manager.can_allocate(seq):
-                raise RuntimeError("Insufficient KV cache for request")
-            self.block_manager.allocate(seq)
-            seq.num_scheduled_tokens = seq.num_tokens
-            seq.status = SequenceStatus.RUNNING
-            seq.running_since = perf_counter()
-            self.running = seq
+
+        if not self.running:
+            scheduled_tokens = 0
+            while self.waiting:
+                seq = self.waiting[0]
+                if self.running and scheduled_tokens + seq.num_tokens > self.max_batch_tokens:
+                    break
+                if not self.block_manager.can_allocate(seq):
+                    if not self.running:
+                        raise RuntimeError("Insufficient KV cache for request")
+                    break
+                self.waiting.popleft()
+                self.block_manager.allocate(seq)
+                seq.num_scheduled_tokens = seq.num_tokens
+                seq.status = SequenceStatus.RUNNING
+                seq.running_since = perf_counter()
+                self.running.append(seq)
+                scheduled_tokens += seq.num_scheduled_tokens
             self.last_metrics = {
                 "duration_ms": (perf_counter() - schedule_start) * 1000,
                 "waiting_depth": waiting_depth,
                 "running_depth": 0,
-                "batch_size": 1,
-                "scheduled_tokens": seq.num_scheduled_tokens,
+                "batch_size": len(self.running),
+                "scheduled_tokens": scheduled_tokens,
                 "is_prefill": True,
             }
-            return [seq], True
+            return self.running.copy(), True
 
-        seq = self.running
-        if not self.block_manager.can_append(seq):
-            raise RuntimeError("Insufficient KV cache to continue request")
-        seq.num_scheduled_tokens = 1
-        seq.is_prefill = False
-        self.block_manager.may_append(seq)
+        for seq in self.running:
+            if not self.block_manager.can_append(seq):
+                raise RuntimeError("Insufficient KV cache to continue request")
+            seq.num_scheduled_tokens = 1
+            seq.is_prefill = False
+            self.block_manager.may_append(seq)
         self.last_metrics = {
             "duration_ms": (perf_counter() - schedule_start) * 1000,
             "waiting_depth": waiting_depth,
-            "running_depth": 1,
-            "batch_size": 1,
-            "scheduled_tokens": 1,
+            "running_depth": len(self.running),
+            "batch_size": len(self.running),
+            "scheduled_tokens": len(self.running),
             "is_prefill": False,
         }
-        return [seq], False
+        return self.running.copy(), False
 
     def postprocess(self, seqs: list[Sequence], token_ids: list[int]):
         for seq, token_id in zip(seqs, token_ids):
@@ -70,4 +80,4 @@ class Scheduler:
                 seq.status = SequenceStatus.FINISHED
                 seq.finished_time = perf_counter()
                 self.block_manager.deallocate(seq)
-                self.running = None
+        self.running = [seq for seq in self.running if not seq.is_finished]

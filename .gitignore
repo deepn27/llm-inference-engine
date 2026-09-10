@@ -137,6 +137,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local plans and runbooks
+Plans/
+
 # Spyder project settings
 .spyderproject
 .spyproject
