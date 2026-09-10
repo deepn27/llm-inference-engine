@@ -27,32 +27,35 @@ class Scheduler:
         schedule_start = perf_counter()
         waiting_depth = len(self.waiting)
 
-        if not self.running:
-            scheduled_tokens = 0
-            while self.waiting:
-                seq = self.waiting[0]
-                if self.running and scheduled_tokens + seq.num_tokens > self.max_batch_tokens:
-                    break
-                if not self.block_manager.can_allocate(seq):
-                    if not self.running:
-                        raise RuntimeError("Insufficient KV cache for request")
-                    break
-                self.waiting.popleft()
-                self.block_manager.allocate(seq)
-                seq.num_scheduled_tokens = seq.num_tokens
-                seq.status = SequenceStatus.RUNNING
-                seq.running_since = perf_counter()
-                self.running.append(seq)
-                scheduled_tokens += seq.num_scheduled_tokens
+        scheduled_seqs = []
+        scheduled_tokens = 0
+        while self.waiting:
+            seq = self.waiting[0]
+            if scheduled_seqs and scheduled_tokens + seq.num_tokens > self.max_batch_tokens:
+                break
+            if not self.block_manager.can_allocate(seq):
+                if not self.running and not scheduled_seqs:
+                    raise RuntimeError("Insufficient KV cache for request")
+                break
+            self.waiting.popleft()
+            self.block_manager.allocate(seq)
+            seq.num_scheduled_tokens = seq.num_tokens
+            seq.status = SequenceStatus.RUNNING
+            seq.running_since = perf_counter()
+            self.running.append(seq)
+            scheduled_seqs.append(seq)
+            scheduled_tokens += seq.num_scheduled_tokens
+
+        if scheduled_seqs:
             self.last_metrics = {
                 "duration_ms": (perf_counter() - schedule_start) * 1000,
                 "waiting_depth": waiting_depth,
-                "running_depth": 0,
-                "batch_size": len(self.running),
+                "running_depth": len(self.running) - len(scheduled_seqs),
+                "batch_size": len(scheduled_seqs),
                 "scheduled_tokens": scheduled_tokens,
                 "is_prefill": True,
             }
-            return self.running.copy(), True
+            return scheduled_seqs, True
 
         for seq in self.running:
             if not self.block_manager.can_append(seq):
